@@ -33,22 +33,7 @@ remove_na_rows <- function(df, matrix_data) {
 area_filter <- function(xmin, xmax, ymin, ymax, df) {
   df <- dplyr::filter(df, lon >= xmin, lon <= xmax, lat >= ymin, lat <= ymax)
   sal_col_names <- grep("^X", names(df), value = TRUE)
-  
-  # If no rows, skip scaling entirely
-  if (nrow(df) == 0L) {
-    return(df)
-  }
-  
-  # If there are no salinity columns, just return what we have
-  if (length(sal_col_names) == 0L) {
-    return(df)
-  }
-  
-  # Safe scaling: convert scaled matrix to data.frame before assignment
-  df[sal_col_names] <- as.data.frame(
-    scale(df[sal_col_names], center = TRUE, scale = FALSE)
-  )
-  
+  df[sal_col_names] <- scale(df[sal_col_names], center = TRUE, scale = FALSE)
   return(df)
 }
 
@@ -66,27 +51,13 @@ sinusoidal_projection <- function(df, lon_0 = 0, radius = 6378.137) {
 ## Eliminación de todas las columnas tales que exista al menos un NA
 filter_na_depths <- function(df, levels) {
   sal_col_names <- grep("^X", names(df), value = TRUE)
-  
-  # No salinity columns at all -> nothing to use
-  if (length(sal_col_names) == 0L) {
-    return(list(df_filtered = df, levels_filtered = numeric(0)))
-  }
-  
-  sal_df <- df[, sal_col_names, drop = FALSE]
+  sal_df <- df[, sal_col_names]
   na_col_indexes <- which(sapply(sal_df, function(x) any(is.na(x))))
-  
-  if (length(na_col_indexes) > 0L) {
+  if (length(na_col_indexes) > 0) {
     cols_to_remove <- sal_col_names[na_col_indexes]
-    df <- df[, !(names(df) %in% cols_to_remove), drop = FALSE]
+    df <- df[, !(names(df) %in% cols_to_remove)]
     levels <- levels[-na_col_indexes]
   }
-  
-  # If all salinity columns were removed, treat as empty
-  remaining_sal <- grep("^X", names(df), value = TRUE)
-  if (length(remaining_sal) == 0L) {
-    return(list(df_filtered = df, levels_filtered = numeric(0)))
-  }
-  
   return(list(df_filtered = df, levels_filtered = levels))
 }
 
@@ -255,8 +226,8 @@ compute_variance_term <- function(fit_obj, coords_df, scale_factor = 1) {
   n <- nrow(coords_df)
   
   unscale_div <- scale_factor^2
-  best_model  <- fit_obj$best
-  model_name  <- best_model$cov.model
+  best_model <- fit_obj$best
+  model_name <- best_model$cov.model
   
   fit_nugget <- best_model$nugget / unscale_div
   fit_psill  <- best_model$cov.pars[1] / unscale_div
@@ -264,181 +235,25 @@ compute_variance_term <- function(fit_obj, coords_df, scale_factor = 1) {
   
   sigma_tr_0 <- fit_nugget + fit_psill
   
-  coords  <- as.matrix(coords_df[, c("lon", "lat")])
-  dist_h  <- as.matrix(dist(coords))
+  coords <- as.matrix(coords_df[, c("lon", "lat")])
+  dist_h <- as.matrix(dist(coords))
+  
   
   gamma_matrix <- calculate_fitted_line(
-    model_name      = model_name,
-    plot_distances  = dist_h,
-    fit_nugget      = fit_nugget,
-    fit_psill       = fit_psill,
-    fit_range       = fit_range,
-    best_model      = best_model
+    model_name = model_name,
+    plot_distances = dist_h,
+    fit_nugget = fit_nugget,
+    fit_psill = fit_psill,
+    fit_range = fit_range,
+    best_model = best_model
   )
   
   sigma_matrix <- matrix(sigma_tr_0, nrow = n, ncol = n) - gamma_matrix
   
-  denom <- sum(sigma_matrix)
-  
-  # Guard: if denominator is zero/negative/NaN, return NA instead of Inf
-  if (!is.finite(denom) || denom <= 0) {
-    return(NA_real_)
-  }
-  
-  result <- (n^2 * sigma_tr_0) / denom
+  result <- (n^2 * sigma_tr_0) / sum(sigma_matrix)
   
   return(result)
 }
 
-###
-
-generate_square_grid <- function(xmin, xmax, ymin, ymax, dx, dy = dx) {
-  xs <- seq(xmin, xmax - dx, by = dx)
-  ys <- seq(ymin, ymax - dy, by = dy)
-  
-  bboxes <- vector("list", length(xs) * length(ys))
-  k <- 1L
-  for (x in xs) {
-    for (y in ys) {
-      bboxes[[k]] <- list(
-        xmin = x,
-        xmax = x + dx,
-        ymin = y,
-        ymax = y + dy
-      )
-      k <- k + 1L
-    }
-  }
-  bboxes
-}
-
-run_square_pipeline <- function(anom,
-                                bbox,
-                                level = 1,
-                                scale_factor = 1000) {
-  dfr <- anom$df
-  
-  dfr_bbox <- area_filter(bbox$xmin, bbox$xmax,
-                          bbox$ymin, bbox$ymax, dfr)
-  
-  filter_result   <- filter_na_depths(dfr_bbox, anom$levels)
-  dfr_bbox_clean  <- filter_result$df_filtered
-  levels_clean    <- filter_result$levels_filtered
-  
-  # Skip if there are no levels or no salinity columns left
-  if (length(levels_clean) == 0L) return(NULL)
-  if (nrow(dfr_bbox_clean) == 0L) return(NULL)
-  
-  dfr_proj <- sinusoidal_projection(dfr_bbox_clean)
-  v        <- depths(levels_clean, dfr_proj)
-  obj      <- make_fdobj(dfr_proj, v)
-  sal_spline <- smooth_cols(obj$sal_mat, v)
-  
-  coord <- as.matrix(cbind(dfr_proj$lon, dfr_proj$lat))
-  emp   <- empirical_tracevariog(coord, obj$fd_obj, obj$base_spline,
-                                 scale_factor = scale_factor)
-  
-  init <- init_variog_params_unbinned(emp$emp_tv)
-  fit  <- fit_trace_variog(emp$emp_tv, init,
-                           model = "exponential",
-                           fix_nugget = FALSE)
-  
-  variance_term <- compute_variance_term(fit_obj = fit,
-                                         coords_df = dfr_proj,
-                                         scale_factor = scale_factor)
-  
-  g <- area_graphs(bbox$xmin, bbox$xmax,
-                   bbox$ymin, bbox$ymax,
-                   dfr, dfr_bbox_clean, level)
-  
-  list(
-    anomaly_df      = dfr,
-    bbox_df         = dfr_bbox_clean,
-    projected_df    = dfr_proj,
-    depth_axis_v    = v,
-    fda             = obj,
-    sal_spline      = sal_spline,
-    emp_variog      = emp$emp_tv,
-    emp_variog_bin  = emp$emp_tv_bin,
-    fit             = fit,
-    variance_term   = variance_term,
-    plots           = g,
-    scale_factor    = scale_factor,
-    bbox            = bbox
-  )
-}
-
-search_squares_over_months <- function(path_2024 = "salt.2024.nc",
-                                       path_ltm  = "salt.mon.ltm.1991-2020.nc",
-                                       months    = 1:12,
-                                       global_bbox,
-                                       level         = 1,
-                                       scale_factor  = 1000,
-                                       min_locs      = 150,
-                                       max_locs      = 500,
-                                       target_var    = 1,
-                                       dx,
-                                       dy = dx) {
-  results <- list()
-  
-  # All candidate boxes in the big region
-  candidate_bboxes <- generate_square_grid(global_bbox$xmin,
-                                           global_bbox$xmax,
-                                           global_bbox$ymin,
-                                           global_bbox$ymax,
-                                           dx = dx, dy = dy)
-  
-  for (m in months) {
-    message("Processing month ", m, " ...")
-    
-    # Anomalies once per month
-    anom <- anomaly_df(path_2024, path_ltm, month = m)
-    month_result <- NULL
-    
-    for (bb in candidate_bboxes) {
-      # Quick location count with NA filtering
-      dfr_bbox <- area_filter(bb$xmin, bb$xmax, bb$ymin, bb$ymax, anom$df)
-      filter_result  <- filter_na_depths(dfr_bbox, anom$levels)
-      dfr_bbox_clean <- filter_result$df_filtered
-      levels_clean   <- filter_result$levels_filtered
-      
-      # Skip if no salinity columns/levels remain
-      if (length(levels_clean) == 0L) next
-      
-      n_loc <- nrow(dfr_bbox_clean)
-      if (n_loc < min_locs || n_loc > max_locs) next
-
-      
-      # Full pipeline for this square
-      r <- run_square_pipeline(anom = anom,
-                               bbox = bb,
-                               level = level,
-                               scale_factor = scale_factor)
-      if (is.null(r)) next
-      
-      if (is.finite(r$variance_term) && r$variance_term >= target_var) {
-        month_result <- c(
-          list(month = m,
-               n_locations = n_loc),
-          r
-        )
-        message("  month ", m,
-                ": found square with variance_term = ",
-                round(r$variance_term, 2),
-                " and n_locations = ", n_loc)
-        break
-      }
-    }
-    
-    if (is.null(month_result)) {
-      message("  month ", m,
-              ": no square reached the target variance term.")
-    }
-    
-    results[[paste0("month_", m)]] <- month_result
-  }
-  
-  results
-}
 
 
