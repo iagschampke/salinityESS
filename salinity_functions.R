@@ -221,7 +221,7 @@ plot_manual_variogram <- function(emp_variogram, fitted_variogram, scale_factor 
 }
 
 ## Cálculo de matriz trazavariograma estimada y ESS
-compute_variance_term <- function(fit_obj, coords_df, scale_factor = 1) {
+compute_ESS <- function(fit_obj, coords_df, scale_factor = 1) {
   
   n <- nrow(coords_df)
   

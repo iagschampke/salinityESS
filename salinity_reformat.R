@@ -71,7 +71,7 @@ res$plots$zoom
 res$fit$best
 length(res$bbox_df$lon)
 
-variance_term <- compute_variance_term(fit_obj = res$fit, coords_df = res$projected_df, 
+variance_term <- compute_ESS(fit_obj = res$fit, coords_df = res$projected_df, 
                                        scale_factor = res$scale_factor)
 print(variance_term)
 
