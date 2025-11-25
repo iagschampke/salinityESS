@@ -1,14 +1,19 @@
 library(geofd)
-library(geoR)
 library(spatial)
 library(lattice)
 library(viridis)
 library(RNetCDF)
 library(latticeExtra)
 library(dplyr)
-library(sf)
 library(ggplot2)
+
+#old_repo <- "https://packagemanager.posit.co/cran/2020-05-05"
+#install.packages("fda", repos = old_repo)
+
 library(fda)
+library(geoR)
+
+
 
 source("salinity_functions.R")
 
@@ -63,7 +68,7 @@ pipeline_salinidad <- function(path_2024 = "salt.2024.nc",
 ############### INICIALIZACIÓN ###############
 
 sf <- 1000
-res <- pipeline_salinidad(month = 2, bbox = list(xmin = -135, xmax = -125, ymin = 5, ymax = 15), level = 10, scale_factor = sf)
+res <- pipeline_salinidad(month = 11, bbox = list(xmin = -40, xmax = -28, ymin = -48, ymax = -36), level = 10, scale_factor = sf)
 
 #res$plots$map
 plot_manual_variogram(res$emp_variog_bin, res$fit, scale_factor = res$scale_factor)
