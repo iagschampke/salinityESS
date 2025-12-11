@@ -47,7 +47,7 @@ pipeline_salinidad <- function(path_2024 = "salt.2024.nc",
        fda             = obj,
        coords          = coords,
        plots           = g)
-  }
+}
 
 ############### INICIALIZACIÓN ###############
 
@@ -94,7 +94,7 @@ res <- pblapply(1:iter, cl = cl, function(i) {
     filt_df  <- filter_na_depths(anom$df, anom$levels)
     df_f <- filt_df$df_filtered
     levels_f <- filt_df$levels_filtered
-
+    
     if (nrow(df_f) == 0 || length(levels_f) <= min_depths) next
     
     df_f <- sinusoidal_projection(df_f)
@@ -138,9 +138,7 @@ res <- pblapply(1:iter, cl = cl, function(i) {
   }
 })
 
-plotVariogram(res[[1]][["g"]])
-res[[1]][["g"]]$model
-
+plotVariogram(res[[10]][["g"]])
 
 stopCluster(cl)
 

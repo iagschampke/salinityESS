@@ -38,7 +38,6 @@ remove_na_rows <- function(df, matrix_data) {
   d <- rowSums(is.finite(matrix_data)) > 0
   matrix_data <- matrix_data[d, , drop = FALSE]
   df <- data.frame(lon = df$lon[d], lat = df$lat[d], matrix_data)
-  df$lon <- ifelse(df$lon > 180, df$lon - 360, df$lon)
   df
 }
 
