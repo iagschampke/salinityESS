@@ -1,4 +1,4 @@
-library(geofd)
+#library(geofd)
 library(spatial)
 library(lattice)
 library(viridis)
@@ -7,11 +7,11 @@ library(dplyr)
 library(ggplot2)
 library(fda)
 library(geoR)
-library(geoFourierFDA)
-library(skimr)
-library(rainbow)
+#library(geoFourierFDA)
+#library(skimr)
+#library(rainbow)
 library(fdagstat)
-library(profvis)
+#library(profvis)
 library(ncdf4)
 library(parallel)
 library(pbapply)
@@ -50,14 +50,16 @@ pipeline_salinidad <- function(path_2024 = "salt.2024.nc",
   }
 
 ############### INICIALIZACIÓN ###############
+
+
 path_2024 = "salt.2024.nc"
 path_ltm = "salt.mon.ltm.1991-2020.nc"
-iter = 100 # cuidado con la RAM
-min_side = 5
-max_side = 30
-min_ub = 200
-max_ub = 300
-min_depths = 35
+iter = 10               # número de regiones a obtener. cuidado con la RAM
+min_side = 2.5          # tamaño mínimo lado rectángulo
+max_side = 20           # tamaño máximo lado rectángulo
+min_ub = 200            # mínimo de ubicaciones en rectángulo
+max_ub = 350            # máximo de ubicaciones en rectángulo
+min_depths = 35         # mínimo de niveles de profundidad restantes
 
 nc <- nc_open("salt.2024.nc")
 lon <- ncvar_get(nc, "lon")
@@ -84,21 +86,60 @@ res <- pblapply(1:iter, cl = cl, function(i) {
     
     if (!(min_ub < n_obs && n_obs < max_ub)) next
     
+    month <- sample(1:12, 1)
     anom <- anomaly_df(path_2024, path_ltm, month, region$xmin, region$xmax, region$ymin, region$ymax)
     
     if (nrow(anom$df) == 0) next
     
     filt_df  <- filter_na_depths(anom$df, anom$levels)
-    df_f     <- filt_df$df_filtered
+    df_f <- filt_df$df_filtered
     levels_f <- filt_df$levels_filtered
 
     if (nrow(df_f) == 0 || length(levels_f) <= min_depths) next
     
-    df_f$n_obs <- rep(n_obs, nrow(df_f))
-
-    return(list(i = i, region = region, n_obs = n_obs, df = df_f, levels = levels_f))
+    df_f <- sinusoidal_projection(df_f)
+    v <- depths(levels_f, df_f)
+    
+    matriz <- df_f[,3:ncol(df_f)]
+    coords <- df_f[,1:2]
+    coords <- coords %>% relocate(lat, .before = lon)
+    
+    Coordinates <- data.frame(lat = coords$lat, lon = coords$lon)
+    Functions <- data.frame(t(matriz))
+    ArgStep <- mean(diff(v))
+    
+    D <- as.matrix(dist(Coordinates[, 1:2]))
+    max_dist <- max(D) * 0.5
+    
+    g <- fstat(NULL, vName = "salinity", Coordinates = Coordinates, Functions = Functions, scalar = FALSE)
+    g <- estimateDrift("~.", g, Intercept = TRUE)
+    g <- fvariogram("~.", g, Nlags = 100, LagMax = max_dist, ArgStep = ArgStep, useResidual = FALSE, comments=TRUE)
+    
+    emp <- g$variogram
+    nugget0 <- min(emp$gamma)
+    sill0 <- mean(emp$gamma[emp$dist > 500]) - nugget0
+    range0 <- max(emp$dist) / 3
+    
+    m0 <- vgm(psill = sill0, model = "Exp", range = range0, nugget = nugget0) # se pueden elegir 19 modelos Exp Sph Gau Exc Mat Ste Cir Lin Bes Pen Per Wav Hol Log Pow Spl Leg Err Int
+    
+    g <- fitVariograms(g, model = m0, fitSills = TRUE, fitRanges = TRUE)
+    g <- addCovariance(g, type = 'omni')
+    
+    model <- g$model$omni$salinity
+    
+    nugget <- model$psill[1]
+    psill  <- model$psill[2]
+    range  <- model$range[2]
+    ESS <- compute_ESS(nugget, psill, range, coords)
+    
+    if (ESS <= 0.10 * n_obs) next 
+    
+    return(list(i = i, region = region, n_obs = n_obs, df = df_f, levels = levels_f, matriz = matriz, coords = coords, g = g, ESS = ESS))
   }
 })
+
+plotVariogram(res[[1]][["g"]])
+res[[1]][["g"]]$model
 
 
 stopCluster(cl)
@@ -106,7 +147,6 @@ stopCluster(cl)
 
 
 #########################  BOXPLOTS PRESENTACIÓN
-
 ??boxplot
 boxplot(res$fda$fd_obj, method = "MBD", prob = c(0.75,0.5,0.25), color = c(1,2,3))
 
