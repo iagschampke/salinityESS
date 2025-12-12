@@ -54,11 +54,11 @@ pipeline_salinidad <- function(path_2024 = "salt.2024.nc",
 
 path_2024 = "salt.2024.nc"
 path_ltm = "salt.mon.ltm.1991-2020.nc"
-iter = 4               # número de regiones a obtener. cuidado con la RAM
-min_side = 5          # tamaño mínimo lado rectángulo
-max_side = 30           # tamaño máximo lado rectángulo
-min_ub = 400            # mínimo de ubicaciones en rectángulo
-max_ub = 600            # máximo de ubicaciones en rectángulo
+iter = 25               # número de regiones a obtener. cuidado con la RAM
+min_side = 2.5          # tamaño mínimo lado rectángulo
+max_side = 25           # tamaño máximo lado rectángulo
+min_ub = 200            # mínimo de ubicaciones en rectángulo
+max_ub = 350            # máximo de ubicaciones en rectángulo
 min_depths = 35         # mínimo de niveles de profundidad restantes
 
 nc <- nc_open("salt.2024.nc")
@@ -80,6 +80,27 @@ clusterEvalQ(cl, {
 })
 
 dir.create("partial_results", showWarnings = FALSE)
+dir.create("logs", showWarnings = FALSE)
+
+unlink(list.files("partial_results", full.names = TRUE), recursive = TRUE)
+unlink(list.files("logs", full.names = TRUE), recursive = TRUE)
+
+getwd()
+list.dirs()
+
+clusterEvalQ(cl, {
+  dir.create("partial_results", showWarnings = FALSE)
+  dir.create("logs", showWarnings = FALSE)
+  unlink(list.files("partial_results", full.names = TRUE), recursive = TRUE)
+  unlink(list.files("logs", full.names = TRUE), recursive = TRUE)
+  NULL
+})
+
+clusterApply(cl, seq_along(cl), function(id) {
+  assign("WORKER_ID", id, envir = .GlobalEnv)
+  NULL
+})
+
 res <- pblapply(1:iter, cl = cl, function(i) {
   tryCatch({
     result <- NULL
@@ -89,20 +110,44 @@ res <- pblapply(1:iter, cl = cl, function(i) {
       
       if (!(min_ub < n_obs && n_obs < max_ub)) next
       
-      results_months <- list()
+      logfile <- file.path("logs", paste0("worker_", i, ".log"))
+      cat("Region accepted for i =", i, "at", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n", "Region bounds:",
+          "xmin =", region$xmin,
+          "xmax =", region$xmax,
+          "ymin =", region$ymin,
+          "ymax =", region$ymax,
+          "n_obs =", n_obs, "\n\n", file = logfile, append = TRUE)
+      
+      saved_any <- FALSE
       
       for (j in 1:12) {
         month <- j
+        
+        cat("  Testing month", month, "for i =", i, "at", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n", file = logfile, append = TRUE)
+      
         anom <- anomaly_df(path_2024, path_ltm, month, region$xmin, region$xmax, region$ymin, region$ymax)
         
-        if (nrow(anom$df) == 0) next
+        if (nrow(anom$df) == 0) {
+          cat("    Skipped: no anomaly data\n", file = logfile, append = TRUE)
+          next
+        }
         
         filt_df  <- filter_na_depths(anom$df, anom$levels)
         df_f <- filt_df$df_filtered
         levels_f <- filt_df$levels_filtered
+
+        if (nrow(df_f) == 0) {
+          cat("    Skipped: all rows removed in depth filtering\n",
+              file = logfile, append = TRUE)
+          next
+        }
         
-        if (nrow(df_f) == 0 || length(levels_f) <= min_depths) next
-        
+        if (length(levels_f) <= min_depths) {
+          cat("    Skipped: too few depth levels (", length(levels_f), ")\n",
+              file = logfile, append = TRUE)
+          next
+        }
+
         df_f <- sinusoidal_projection(df_f)
         v <- depths(levels_f, df_f)
         
@@ -137,17 +182,23 @@ res <- pblapply(1:iter, cl = cl, function(i) {
         psill  <- model$psill[2]
         range  <- model$range[2]
         ESS <- compute_ESS(nugget, psill, range, coords)
+
+        if (ESS <= 0.10 * n_obs) {
+          cat("    Skipped: ESS too small (", ESS, ")\n", file = logfile, append = TRUE)
+          next
+        }
+
+        filename <- paste0("partial_results/res_", i, "_", j, ".rds")
+        result <- list(i = i, region = region, month = month, n_obs = n_obs, df = df_f, levels = levels_f, matriz = matriz, coords = coords, g = g, ESS = ESS)
+        saveRDS(result, filename)
         
-        if (ESS <= 0.10 * n_obs) next 
+        cat("    Saved:", filename, "\n", file = logfile, append = TRUE)
         
-        #filename <- paste0("partial_results/res_", i, ".rds")
-        results_months[[length(results_months) + 1]] <- list(i = i, region = region, month = month, n_obs = n_obs,
-          df = df_f, levels = levels_f, matriz = matriz, coords = coords, g = g, ESS = ESS)
-      
-        #saveRDS(result, filename)
+        saved_any <- TRUE
+        
       }
       
-      if (length(results_months) > 0) return(results_months)
+      if (saved_any) return(NULL)
       
     }
   }, error = function(e) {
